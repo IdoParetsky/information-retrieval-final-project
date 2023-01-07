@@ -7,9 +7,9 @@ from nltk.corpus import stopwords
 import numpy as np
 from collections import defaultdict, Counter
 import pandas as pd
-import InvertedIndex
-
+from inverted_index import *
 from pyspark.sql import SparkSession
+import pyspark.sql.functions as f
 spark = SparkSession.builder.getOrCreate()
 
 class MyFlaskApp(Flask):
@@ -104,13 +104,28 @@ def search_title():
         worst where each element is a tuple (wiki_id, title).
     '''
     res = []
-    query = request.args.get('query', '')
+    #query = request.args.get('query', '')
+    query = ' '
     if len(query) == 0:
       return jsonify(res)
     # BEGIN SOLUTION
-    idx_title = InvertedIndex.read_index('title_index', 'title')
+    idx_title = InvertedIndex.read_index('.', 'title_index')
     words, pls = zip(*idx_title.posting_lists_iter())
     tok_query = tokenize(query)
+    candidates_distinct = {}
+    for term in np.unique(tok_query):
+        if term in words:
+            list_of_doc = pls[words.index(term)]
+            for doc_id, freq in list_of_doc:
+                if doc_id not in candidates_distinct.keys():
+                    candidates_distinct[doc_id] = 1
+                else:
+                    candidates_distinct[doc_id] += 1
+    sorted_candidates = dict(sorted(candidates_distinct.items(), key=lambda item: item[1]))
+    res = []
+    for id, count in sorted_candidates.items():
+        res.append(id)
+
     # END SOLUTION
     return jsonify(res)
 
@@ -136,14 +151,29 @@ def search_anchor():
         worst where each element is a tuple (wiki_id, title).
     '''
     res = []
-    query = request.args.get('query', '')
+    #query = request.args.get('query', '')
+    query  = ' '
     if len(query) == 0:
       return jsonify(res)
     # BEGIN SOLUTION
-    idx_anchor = InvertedIndex.read_index('anchor_index', 'anchor')
+    idx_anchor = InvertedIndex.read_index('.', 'anchor_index')
+    print(idx_anchor.posting_locs)
+
     words, pls = zip(*idx_anchor.posting_lists_iter())
     tok_query = tokenize(query)
-
+    candidates_distinct = {}
+    for term in np.unique(tok_query):
+        if term in words:
+            list_of_doc = pls[words.index(term)]
+            for doc_id, freq in list_of_doc:
+                if doc_id not in candidates_distinct.keys():
+                    candidates_distinct[doc_id] = 1
+                else:
+                    candidates_distinct[doc_id] += 1
+    sorted_candidates = dict(sorted(candidates_distinct.items(), key=lambda item: item[1],reverse=True))
+    res = []
+    for id, count in sorted_candidates.items():
+        res.append(id)
     # END SOLUTION
     return jsonify(res)
 
@@ -203,15 +233,15 @@ def get_pageview():
 english_stopwords = frozenset(stopwords.words('english'))
 # We queried ChatGPT for Wikipedia-specific StopWords and added some of our own
 corpus_stopwords = ["category", "references", "also", "external", "links",
-                    "may", "first", "see", "history", "people", "one", "two",
+                    "first", "see", "people", "one", "two",
                     "part", "thumb", "including", "second", "following",
                     "many", "however", "would", "became", "page", "article",
-                    "information", "data", "reference", "source", "content",
-                    "fact", "time", "year", "date", "place", "wiki",
+                    "reference", "source", "content",
+                    "fact", "year", "date", "place", "wiki",
                     "edit", "version", "user", "talk", "discussion", "template",
-                    "category", "portal", "project", "author", "writer",
+                    "category", "project", "author", "writer",
                     "creator", "publisher", "editor", "publication", "edition",
-                    "volume", "number", "issue", "chapter"]
+                    "issue", "chapter"]
 all_stopwords = english_stopwords.union(corpus_stopwords)
 RE_WORD = re.compile(r"""[\#\@\w](['\-]?\w){2,24}""", re.UNICODE)
 
@@ -393,6 +423,69 @@ def cosine_similarity(D, Q):
     for idx, row in D.iterrows():
         res[idx] = cos_sim_formula(row, Q)
     return res
+
+is_gcp = False
+# if not is_gcp:
+#     # Copy one wikidumps files
+#     import os
+#     from pathlib import Path
+#
+#     ## RENAME the project_id to yours project id from the project you created in GCP
+#     project_id = 'crypto-lexicon-370515'
+#     !gcloud
+#     config
+#     set
+#     project
+#     {project_id}
+#
+#     data_bucket_name = 'wikidata20210801_preprocessed'
+#     try:
+#         if os.environ["wikidata20210801_preprocessed"] is not None:
+#             pass
+#     except:
+#         !mkdir
+#         wikidumps
+#         !gsutil - u
+#         {project_id}
+#         cp
+#         gs: // {data_bucket_name} / multistream1_preprocessed.parquet
+#         "wikidumps/"
+#
+#     try:
+#         if os.environ["wikidata20210801_preprocessed"] is not None:
+#             path = os.environ["wikidata20210801_preprocessed"] + "/wikidumps/*"
+#     except:
+#         path = "wikidumps/*"
+#
+#     parquetFile = spark.read.parquet(path)
+#     # take the 'title', 'text', 'anchor_text' and 'id' or the first 1000 rows and create an RDD from it
+#     doc_title_text_anchor_quadruplets = parquetFile.limit(1000).select("title", "text", "anchor_text", "id").rdd
+#
+#     from inverted_index_colab import *
+#
+#     id_title = spark.read.parquet(path).limit(1000).select("id", "title")
+#
+# else:
+#     # Put your bucket name below and make sure you can access it without an error
+#     bucket_name = '318419512_318510252'
+#     full_path = f"gs://{318419512_318510252}/"
+#     paths = []
+#
+#     client = storage.Client()
+#     blobs = client.list_blobs(bucket_name)
+#     for b in blobs:
+#         if b.name != 'graphframes.sh':
+#             paths.append(full_path + b.name)
+#     parquetFile = spark.read.parquet(*paths)
+#     from inverted_index_gcp import InvertedIndex
+#
+#     id_title = parquetFile.select("id", "title").rdd
+#
+# import pyspark.sql.functions as f
+# get_title_from_id = lambda wiki_id: id_title.filter(f.col('id')==wiki_id).collect()[0][1]
+
 if __name__ == '__main__':
     # run the Flask RESTful API, make the server publicly available (host='0.0.0.0') on port 8080
-    app.run(host='0.0.0.0', port=8080, debug=True)
+    #app.run(host='0.0.0.0', port=8080, debug=True)
+    search_anchor()
+
