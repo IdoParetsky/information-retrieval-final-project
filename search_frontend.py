@@ -1,4 +1,16 @@
 from flask import Flask, request, jsonify
+import math
+import re
+import nltk
+nltk.download('stopwords')
+from nltk.corpus import stopwords
+import numpy as np
+from collections import defaultdict, Counter
+import pandas as pd
+import InvertedIndex
+
+from pyspark.sql import SparkSession
+spark = SparkSession.builder.getOrCreate()
 
 class MyFlaskApp(Flask):
     def run(self, host=None, port=None, debug=None, **options):
@@ -53,9 +65,19 @@ def search_body():
     '''
     res = []
     query = request.args.get('query', '')
+
+
     if len(query) == 0:
       return jsonify(res)
     # BEGIN SOLUTION
+
+    idx_body = InvertedIndex.read_index('body_index', 'body')
+    words, pls = zip(*idx_body.posting_lists_iter())
+    tok_query = tokenize(query)
+    Q = generate_query_tfidf_vector(tok_query, idx_body)
+    D = generate_document_tfidf_matrix(tok_query, idx_body, words, pls)
+    cos_sim = cosine_similarity(D, Q)
+    res = get_top_n(cos_sim, 100)
 
     # END SOLUTION
     return jsonify(res)
@@ -64,9 +86,13 @@ def search_body():
 def search_title():
     ''' Returns ALL (not just top 100) search results that contain A QUERY WORD 
         IN THE TITLE of articles, ordered in descending order of the NUMBER OF 
-        QUERY WORDS that appear in the title. For example, a document with a 
-        title that matches two of the query words will be ranked before a 
-        document with a title that matches only one query term. 
+        DISTINCT QUERY WORDS that appear in the title. DO NOT use stemming. DO 
+        USE the staff-provided tokenizer from Assignment 3 (GCP part) to do the 
+        tokenization and remove stopwords. For example, a document 
+        with a title that matches two distinct query words will be ranked before a 
+        document with a title that matches only one distinct query word, 
+        regardless of the number of times the term appeared in the title (or 
+        query). 
 
         Test this by navigating to the a URL like:
          http://YOUR_SERVER_DOMAIN/search_title?query=hello+world
@@ -82,7 +108,9 @@ def search_title():
     if len(query) == 0:
       return jsonify(res)
     # BEGIN SOLUTION
-
+    idx_title = InvertedIndex.read_index('title_index', 'title')
+    words, pls = zip(*idx_title.posting_lists_iter())
+    tok_query = tokenize(query)
     # END SOLUTION
     return jsonify(res)
 
@@ -91,9 +119,12 @@ def search_anchor():
     ''' Returns ALL (not just top 100) search results that contain A QUERY WORD 
         IN THE ANCHOR TEXT of articles, ordered in descending order of the 
         NUMBER OF QUERY WORDS that appear in anchor text linking to the page. 
-        For example, a document with a anchor text that matches two of the 
-        query words will be ranked before a document with anchor text that 
-        matches only one query term. 
+        DO NOT use stemming. DO USE the staff-provided tokenizer from Assignment 
+        3 (GCP part) to do the tokenization and remove stopwords. For example, 
+        a document with a anchor text that matches two distinct query words will 
+        be ranked before a document with anchor text that matches only one 
+        distinct query word, regardless of the number of times the term appeared 
+        in the anchor text (or query). 
 
         Test this by navigating to the a URL like:
          http://YOUR_SERVER_DOMAIN/search_anchor?query=hello+world
@@ -109,7 +140,10 @@ def search_anchor():
     if len(query) == 0:
       return jsonify(res)
     # BEGIN SOLUTION
-    
+    idx_anchor = InvertedIndex.read_index('anchor_index', 'anchor')
+    words, pls = zip(*idx_anchor.posting_lists_iter())
+    tok_query = tokenize(query)
+
     # END SOLUTION
     return jsonify(res)
 
@@ -166,6 +200,199 @@ def get_pageview():
     return jsonify(res)
 
 
+english_stopwords = frozenset(stopwords.words('english'))
+# We queried ChatGPT for Wikipedia-specific StopWords and added some of our own
+corpus_stopwords = ["category", "references", "also", "external", "links",
+                    "may", "first", "see", "history", "people", "one", "two",
+                    "part", "thumb", "including", "second", "following",
+                    "many", "however", "would", "became", "page", "article",
+                    "information", "data", "reference", "source", "content",
+                    "fact", "time", "year", "date", "place", "wiki",
+                    "edit", "version", "user", "talk", "discussion", "template",
+                    "category", "portal", "project", "author", "writer",
+                    "creator", "publisher", "editor", "publication", "edition",
+                    "volume", "number", "issue", "chapter"]
+all_stopwords = english_stopwords.union(corpus_stopwords)
+RE_WORD = re.compile(r"""[\#\@\w](['\-]?\w){2,24}""", re.UNICODE)
+
+def tokenize(text):
+    """
+    This function aims in tokenize a text into a list of tokens. Moreover, it filter stopwords.
+
+    Parameters:
+    -----------
+    text: string , represting the text to tokenize.
+
+    Returns:
+    -----------
+    list of tokens (e.g., list of tokens).
+    """
+    list_of_tokens = [token.group() for token in RE_WORD.finditer(text.lower()) if token.group() not in all_stopwords]
+    return list_of_tokens
+
+def get_candidate_documents_and_scores(query_to_search, index, words, pls):
+    """
+    Generate a dictionary representing a pool of candidate documents for a given query. This function will go through every token in query_to_search
+    and fetch the corresponding information (e.g., term frequency, document frequency, etc.') needed to calculate TF-IDF from the posting list.
+    Then it will populate the dictionary 'candidates.'
+    For calculation of IDF, use log with base 10.
+    tf will be normalized based on the length of the document.
+
+    Parameters:
+    -----------
+    query_to_search: list of tokens (str). This list will be preprocessed in advance (e.g., lower case, filtering stopwords, etc.').
+                     Example: 'Hello, I love information retrival' --->  ['hello','love','information','retrieval']
+
+    index:           inverted index loaded from the corresponding files.
+
+    words,pls: iterator for working with posting.
+
+    Returns:
+    -----------
+    dictionary of candidates. In the following format:
+                                                               key: pair (doc_id,term)
+                                                               value: tfidf score.
+    """
+    candidates = {}
+    for term in np.unique(query_to_search):
+        if term in words:
+            list_of_doc = pls[words.index(term)]
+            normlized_tfidf = [(doc_id, (freq / index.DL[str(doc_id)]) * math.log(len(index.DL) / index.df[term], 10)) for
+                               doc_id, freq in list_of_doc]
+
+            for doc_id, tfidf in normlized_tfidf:
+                candidates[(doc_id, term)] = candidates.get((doc_id, term), 0) + tfidf
+
+    return candidates
+
+def generate_document_tfidf_matrix(query_to_search, index, words, pls):
+    """
+    Generate a DataFrame `D` of tfidf scores for a given query.
+    Rows will be the documents candidates for a given query
+    Columns will be the unique terms in the index.
+    The value for a given document and term will be its tfidf score.
+
+    Parameters:
+    -----------
+    query_to_search: list of tokens (str). This list will be preprocessed in advance (e.g., lower case, filtering stopwords, etc.').
+                     Example: 'Hello, I love information retrival' --->  ['hello','love','information','retrieval']
+
+    index:           inverted index loaded from the corresponding files.
+
+
+    words,pls: iterator for working with posting.
+
+    Returns:
+    -----------
+    DataFrame of tfidf scores.
+    """
+
+    total_vocab_size = len(index.term_total)
+    candidates_scores = get_candidate_documents_and_scores(query_to_search, index, words,
+                                                           pls)  # We do not need to utilize all document. Only the docuemnts which have corrspoinding terms with the query.
+    unique_candidates = np.unique([doc_id for doc_id, freq in candidates_scores.keys()])
+    D = np.zeros((len(unique_candidates), total_vocab_size))
+    D = pd.DataFrame(D)
+    D.index = unique_candidates
+    D.columns = index.term_total.keys()
+    for key in candidates_scores:
+        tfidf = candidates_scores[key]
+        doc_id, term = key
+        D.loc[doc_id][term] = tfidf
+
+    D = spark.createDataFrame(D)
+    return D
+
+def generate_query_tfidf_vector(query_to_search, index):
+
+    """
+    Generate a vector representing the query. Each entry within this vector represents a tfidf score.
+    The terms representing the query will be the unique terms in the index.
+
+    We will use tfidf on the query as well.
+    For calculation of IDF, use log with base 10.
+    tf will be normalized based on the length of the query.
+
+    Parameters:
+    -----------
+    query_to_search: list of tokens (str). This list will be preprocessed in advance (e.g., lower case, filtering stopwords, etc.').
+                     Example: 'Hello, I love information retrival' --->  ['hello','love','information','retrieval']
+
+    index:           inverted index loaded from the corresponding files.
+
+    Returns:
+    -----------
+    vectorized query with tfidf scores
+    """
+
+    epsilon = .0000001
+    total_vocab_size = len(index.term_total)
+    Q = np.zeros((total_vocab_size))
+    term_vector = list(index.term_total.keys())
+    counter = Counter(query_to_search)
+    for token in np.unique(query_to_search):
+        if token in index.term_total.keys():  # avoid terms that do not appear in the index.
+            tf = counter[token] / len(query_to_search)  # term frequency divded by the length of the query
+            df = index.df[token]
+            idf = math.log((len(index.DL)) / (df + epsilon), 10)  # smoothing
+
+            try:
+                ind = term_vector.index(token)
+                Q[ind] = tf * idf
+            except:
+                pass
+    return Q
+
+def get_top_n(sim_dict, N=3):
+        """
+        Sort and return the highest N documents according to the cosine similarity score.
+        Generate a dictionary of cosine similarity scores
+
+        Parameters:
+        -----------
+        sim_dict: a dictionary of similarity score as follows:
+                                                                    key: document id (e.g., doc_id)
+                                                                    value: similarity score. We keep up to 5 digits after the decimal point. (e.g., round(score,5))
+
+        N: Integer (how many documents to retrieve). By default N = 3
+
+        Returns:
+        -----------
+        a ranked list of pairs (doc_id, score) in the length of N.
+        """
+
+        return sorted([(doc_id, round(score, 10)) for doc_id, score in sim_dict.items()], key=lambda x: x[1],
+                      reverse=True)[:N]
+
+def cos_sim_formula(doc, query):
+    numerator = sum(doc * query)
+    denumerator = ((query ** 2).sum() ** 0.5) * ((doc ** 2).sum() ** 0.5)
+    return numerator / denumerator
+
+def cosine_similarity(D, Q):
+    """
+    Calculate the cosine similarity for each candidate document in D and a given query (e.g., Q).
+    Generate a dictionary of cosine similarity scores
+    key: doc_id
+    value: cosine similarity score
+
+    Parameters:
+    -----------
+    D: DataFrame of tfidf scores.
+
+    Q: vectorized query with tfidf scores
+
+    Returns:
+    -----------
+    dictionary of cosine similarity score as follows:
+                                                                key: document id (e.g., doc_id)
+                                                                value: cosine similarty score.
+    """
+
+    res = {}
+    for idx, row in D.iterrows():
+        res[idx] = cos_sim_formula(row, Q)
+    return res
 if __name__ == '__main__':
     # run the Flask RESTful API, make the server publicly available (host='0.0.0.0') on port 8080
     app.run(host='0.0.0.0', port=8080, debug=True)

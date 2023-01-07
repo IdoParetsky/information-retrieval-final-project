@@ -22,15 +22,16 @@ BLOCK_SIZE = 1999998
 class MultiFileWriter:
     """ Sequential binary writer to multiple files of up to BLOCK_SIZE each. """
 
-    def __init__(self, base_dir, name, bucket_name):
+    def __init__(self, base_dir, name, bucket_name=None):
         self._base_dir = Path(base_dir)
         self._name = name
         self._file_gen = (open(self._base_dir / f'{name}_{i:03}.bin', 'wb')
                           for i in count())
         self._f = next(self._file_gen)
         # Connecting to google storage bucket.
-        self.client = storage.Client()
-        self.bucket = self.client.bucket(bucket_name)
+        if bucket_name:  # GCP (not colab debug run)
+            self.client = storage.Client()
+            self.bucket = self.client.bucket(bucket_name)
 
     def write(self, b):
         locs = []
@@ -117,6 +118,7 @@ class InvertedIndex:
         # the number of bytes from the beginning of the file where the posting list
         # starts.
         self.posting_locs = defaultdict(list)
+        self.DL = {}
 
         for doc_id, tokens in docs.items():
             self.add_doc(doc_id, tokens)
@@ -126,6 +128,7 @@ class InvertedIndex:
             the tf of tokens, then update the index (in memory, no storage
             side-effects).
         """
+        self.DL[doc_id] = self.DL.get(doc_id, 0) + (len(tokens))
         w2cnt = Counter(tokens)
         self.term_total.update(w2cnt)
         for w, cnt in w2cnt.items():
@@ -134,9 +137,18 @@ class InvertedIndex:
                                           cnt))  # TODO: Consider adding more attributes to the posting list to help evaluating similarity
 
     def write_index(self, base_dir, name):
-        """ Write the in-memory index to disk. Results in the file:
-            (1) `name`.pkl containing the global term stats (e.g. df).
+        """ Write the in-memory index to disk and populate the `posting_locs`
+            variables with information about file location and offset of posting
+            lists. Results in at least two files:
+            (1) posting files `name`XXX.bin containing the posting lists.
+            (2) `name`.pkl containing the global term stats (e.g. df)
         """
+        #### POSTINGS ####
+        self.posting_locs = defaultdict(list)
+        with closing(MultiFileWriter(base_dir, name)) as writer:
+            # iterate over posting lists in lexicographic order
+            for w in sorted(self._posting_list.keys()):
+                self._write_a_posting_list(w, writer, sort=True)
         #### GLOBAL DICTIONARIES ####
         self._write_globals(base_dir, name)
 
