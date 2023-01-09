@@ -129,7 +129,7 @@ class InvertedIndex:
     """
     with closing(MultiFileReader()) as reader:
       for w, locs in self.posting_locs.items():
-        b = reader.read(locs, self.df[w] * TUPLE_SIZE)
+        b = reader.read([("./colab_bins/"+locs[0][0], locs[0][1])], self.df[w] * TUPLE_SIZE)
         posting_list = []
         for i in range(self.df[w]):
           doc_id = int.from_bytes(b[i*TUPLE_SIZE:i*TUPLE_SIZE+4], 'big')
