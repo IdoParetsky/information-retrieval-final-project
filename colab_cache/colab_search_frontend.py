@@ -9,11 +9,10 @@ from collections import defaultdict, Counter
 import pandas as pd
 from inverted_index_colab import *
 from pyspark.sql import SparkSession
+import time
+import math
 
 
-
-
-#spark = SparkSession.builder.getOrCreate()
 
 class MyFlaskApp(Flask):
     def run(self, host=None, port=None, debug=None, **options):
@@ -24,7 +23,7 @@ app.config['JSONIFY_PRETTYPRINT_REGULAR'] = False
 
 
 @app.route("/search")
-def search():
+def search(search_query=None):
     ''' Returns up to a 100 of your best search results for the query. This is 
         the place to put forward your best search engine, and you are free to
         implement the retrieval whoever you'd like within the bound of the 
@@ -41,17 +40,35 @@ def search():
         list of up to 100 search results, ordered from best to worst where each 
         element is a tuple (wiki_id, title).
     '''
-    res = []
-    query = request.args.get('query', '')
+    
+    if search_query:
+        query = search_query
+    else:
+        query = request.args.get('query', '')
+    
     if len(query) == 0:
-      return jsonify(res)
+      return [] if search_query else jsonify([])
     # BEGIN SOLUTION
+    res1 = search_body(query)
+    print(f"{res1 = }")
+    res2 = search_title(query)[:100]
+    print(f"{res2 = }")
+    res3 = search_anchor(query)[:100]
+    print(f"{res3 = }")
+    ids_of_res1 = [res1[0] for item in res1]
+    ids_of_res2 = [res2[0] for item in res2]
+    ids_of_res3 = [res3[0] for item in res3]
+    combined_list = res1 + res2 + res3
+    counts = Counter(combined_list)
+    sorted_counts = sorted(counts.items(), key=lambda x: x[1], reverse=True)
+    res = [item[0] for item in sorted_counts[:100]]
 
     # END SOLUTION
+    return res
     return jsonify(res)
 
 @app.route("/search_body")
-def search_body():
+def search_body(search_query=None):
     ''' Returns up to a 100 search results for the query using TFIDF AND COSINE
         SIMILARITY OF THE BODY OF ARTICLES ONLY. DO NOT use stemming. DO USE the 
         staff-provided tokenizer from Assignment 3 (GCP part) to do the 
@@ -66,23 +83,45 @@ def search_body():
         list of up to 100 search results, ordered from best to worst where each 
         element is a tuple (wiki_id, title).
     '''
-    res = []
-    #query = request.args.get('query', '')
-    query = "Artist Art"
+    
+    if search_query:
+        query = search_query
+    else:
+        query = request.args.get('query', '')
+
+    # BEGIN SOLUTION
 
     tok_query = tokenize(query)
-    Q = generate_query_tfidf_vector(tok_query, idx_body)
-    D = generate_document_tfidf_matrix(tok_query, idx_body, body_words, body_pls)
-    cos_sim = cosine_similarity(D, Q)
+    filitered_query = list(filter(lambda x: x in body_words, tok_query))
+    query_tf = {}
+    query_tf = {word: query_tf.get(word, 0) + 1 for word in filitered_query}
+    query_tf_idf =  {word: tf / len(tok_query) * math.log10(N / idx_body.df[word]) for word, tf in query_tf.items()}
+    
+    candidates_tf_idf = {}
+    candidates_tf_idf = {(doc_id, word): candidates_tf_idf.get((doc_id, word), 0) + (freq / idx_body.DL[doc_id]) * math.log10(N / idx_body.df[word]) for word in filitered_query for doc_id, freq in body_pls[body_words.index(word)]}
+    
+    print(f"{filitered_query = }")
+    print(f"{candidates_tf_idf = }")
+    #doc_id_list = list(set()
+    cos_sim_scores = {}
+    #for (doc_id, ) in candidates_tf_idf:
+        
+    
+    #cos_sim_dict = {doc_id: for (doc_id, word), doc_tfidf in candidates.items() for word in filitered_query}
+    
+    
+    #Q = generate_query_tfidf_vector(tok_query, body_words, body_pls)
+    #D = generate_document_tfidf_matrix(tok_query, idx_body, body_words, body_pls)
+    #cos_sim = cosine_similarity(D, Q)
     res = get_top_n(cos_sim, 100)
 
+    return [(key, id_title_pr_pv_dict[str(key)][0]) for key, score in res] 
+    
     # END SOLUTION
     return jsonify(res)
 
-
-
 @app.route("/search_title")
-def search_title():
+def search_title(search_query=None):
     ''' Returns ALL (not just top 100) search results that contain A QUERY WORD 
         IN THE TITLE of articles, ordered in descending order of the NUMBER OF 
         DISTINCT QUERY WORDS that appear in the title. DO NOT use stemming. DO 
@@ -104,31 +143,36 @@ def search_title():
 
     '''
 
-    res = []
-    #query = request.args.get('query', '')
-    query = 'american'
+    if search_query:
+        query = search_query
+    else:
+        query = request.args.get('query', '')
+    
     if len(query) == 0:
-      return jsonify(res)
+      return [] if search_query else jsonify([])
     # BEGIN SOLUTION
 
-    tok_query = tokenize(query)
+    tok_query = set(tokenize(query))
     candidates_distinct = {}
-    for term in np.unique(tok_query):
-        if term in title_words_pls.keys():
-            list_of_docs = title_words_pls[term]
-            for doc_id in list_of_docs:
-                candidates_distinct[doc_id] = candidates_distinct.get(doc_id, 0) + 1
-        else:
-            print("The word " + term + " does NOT appear in our index")
-    candidates_distinct = sorted(candidates_distinct, key=lambda item: item[1])
-    return [(key[0], id_pagerank_title_pageviews_df.where(id_pagerank_title_pageviews_df.id == key[0]).select("title").first()[0]) for key in candidates_distinct]
+    """
+    for term in tok_query:
+        for doc_id, _ in title_words_pls.get(term, (None, None)):
+            if doc_id:
+                doc_pagerank = id_title_pr_pv_dict[str(doc_id)][1]  # take the matching pagerank to the given id from the global dict 
+                candidates_distinct[doc_id] = (candidates_distinct.get(doc_id, (0, doc_pagerank))[0] + 1, doc_pagerank)
+    """
+    filitered_query = list(filter(lambda x: x in title_words_pls, tok_query))
+    candidates_distinct = {doc_id: candidates_distinct.get(doc_id, 0) + 1 for word in filitered_query for (doc_id, _) in title_words_pls[word]}
+
+    candidates_distinct = sorted({doc_id: (cnt, *id_title_pr_pv_dict[str(doc_id)][1::-1]) for doc_id, cnt in  candidates_distinct.items()}.items(), key=lambda x: (x[1][0], x[1][1]), reverse=True)
+
+    res = [(doc_id, cnt_pr_title[2]) for doc_id, cnt_pr_title in candidates_distinct]
+    return res if search_query else jsonify(res)
 
     # END SOLUTION
 
-    return jsonify(res)
-
 @app.route("/search_anchor")
-def search_anchor():
+def search_anchor(search_query=None):
     ''' Returns ALL (not just top 100) search results that contain A QUERY WORD 
         IN THE ANCHOR TEXT of articles, ordered in descending order of the 
         NUMBER OF QUERY WORDS that appear in anchor text linking to the page. 
@@ -148,30 +192,43 @@ def search_anchor():
         list of ALL (not just top 100) search results, ordered from best to 
         worst where each element is a tuple (wiki_id, title).
     '''
-    res = []
-    #query = request.args.get('query', '')
-    query = 'Andorra Afrikaans Army Al-Qaeda'
+    
+    if search_query:
+        query = search_query
+    else:
+        query = request.args.get('query', '')
+    
     if len(query) == 0:
-      return jsonify(res)
+      return [] if search_query else jsonify([])
     # BEGIN SOLUTION
 
     tok_query = tokenize(query)
     candidates_distinct = {}
+    """
     for term in np.unique(tok_query):
         if term in anchor_words_pls.keys():
             list_of_docs = anchor_words_pls[term]
             for doc_id in list_of_docs:
-                candidates_distinct[doc_id] = candidates_distinct.get(doc_id, 0) + 1
+                doc_pagerank = id_title_pr_pv_dict[str(doc_id[0])][1] 
+                if doc_id[0] in candidates_distinct.keys():
+                    candidates_distinct[doc_id[0]] = (candidates_distinct[doc_id[0]][0]+1,doc_pagerank)
+                else:
+                    candidates_distinct[doc_id[0]] = (1, doc_pagerank)
         else:
-            print("The word " + term + " does NOT appear in our index")
-    #sorted_candidates = dict(sorted(candidates_distinct.items(), key=lambda item: item[1], reverse=True))
-    candidates_distinct = sorted(candidates_distinct, key=lambda item: item[1])
-    return [(key[0], id_pagerank_title_pageviews_df.where(id_pagerank_title_pageviews_df.id == key[0]).select("title").first()[0]) for key
-            in candidates_distinct]
+            print(f"The word '{term}' in query '{query}' does NOT appear in our Anchor Index")
+    
+    
+    candidates_distinct = sorted(candidates_distinct.items(), key=lambda x: (x[1][0], x[1][1]),reverse=True)
+    return [(key[0], id_title_pr_pv_dict[str(key[0])][0]) for key in candidates_distinct] 
+    """
+    filitered_query = list(filter(lambda x: x in anchor_words_pls, tok_query))
+    candidates_distinct = {doc_id: candidates_distinct.get(doc_id, 0) + 1 for word in filitered_query for (doc_id, _) in anchor_words_pls[word]}
+    
+    candidates_distinct = sorted({doc_id: (cnt, *id_title_pr_pv_dict[str(doc_id)][1::-1]) for doc_id, cnt in  candidates_distinct.items()}.items(), key=lambda x: (x[1][0], x[1][1]), reverse=True)
 
-
+    res = [(doc_id, cnt_pr_title[2]) for doc_id, cnt_pr_title in candidates_distinct]
+    return res if search_query else jsonify(res)
     # END SOLUTION
-    return jsonify(res)
 
 @app.route("/get_pagerank", methods=['POST'])
 def get_pagerank():
@@ -190,12 +247,19 @@ def get_pagerank():
           list of PageRank scores that correrspond to the provided article IDs.
     '''
     res = []
-    wiki_ids = request.get_json()
+    #wiki_ids = request.get_json()
+    wiki_ids = [12,25,999]
     if len(wiki_ids) == 0:
       return jsonify(res)
     # BEGIN SOLUTION
-
+    for id in wiki_ids:
+        if str(id) in id_title_pr_pv_dict.keys():
+            res.append((id_title_pr_pv_dict[str(id)][0],id_title_pr_pv_dict[str(id)][1]))
+        else:
+            print("Unknown ID")
+    
     # END SOLUTION
+    return res
     return jsonify(res)
 
 @app.route("/get_pageview", methods=['POST'])
@@ -217,11 +281,20 @@ def get_pageview():
           provided list article IDs.
     '''
     res = []
-    wiki_ids = request.get_json()
+    wiki_ids = [12,25,999]
+    #wiki_ids = request.get_json()
     if len(wiki_ids) == 0:
       return jsonify(res)
     # BEGIN SOLUTION
-
+    
+    for id in wiki_ids:
+        if str(id) in id_title_pr_pv_dict.keys():
+            res.append((id_title_pr_pv_dict[str(id)][0],id_title_pr_pv_dict[str(id)][2]))
+        else:
+            print("Unknown ID")
+    
+    
+    return res
     # END SOLUTION
     return jsonify(res)
 
@@ -283,12 +356,10 @@ def get_candidate_documents_and_scores(query_to_search, index, words, pls):
     for term in np.unique(query_to_search):
         if term in words:
             list_of_doc = pls[words.index(term)]
-            normlized_tfidf = [(doc_id, (freq / index.DL[str(doc_id)]) * math.log(len(index.DL) / index.df[term], 10)) for
+            normlized_tfidf = [(doc_id, (freq / index.DL[doc_id]) * math.log(len(index.DL) / index.df[term], 10)) for
                                doc_id, freq in list_of_doc]
-
             for doc_id, tfidf in normlized_tfidf:
                 candidates[(doc_id, term)] = candidates.get((doc_id, term), 0) + tfidf
-
     return candidates
 
 def generate_document_tfidf_matrix(query_to_search, index, words, pls):
@@ -313,22 +384,23 @@ def generate_document_tfidf_matrix(query_to_search, index, words, pls):
     DataFrame of tfidf scores.
     """
 
-    total_vocab_size = len(index.term_total)
+    total_vocab_size = len(words)
     candidates_scores = get_candidate_documents_and_scores(query_to_search, index, words,
                                                            pls)  # We do not need to utilize all document. Only the docuemnts which have corrspoinding terms with the query.
     unique_candidates = np.unique([doc_id for doc_id, freq in candidates_scores.keys()])
     D = np.zeros((len(unique_candidates), total_vocab_size))
     D = pd.DataFrame(D)
+
     D.index = unique_candidates
-    D.columns = index.term_total.keys()
+    D.columns = words
+
     for key in candidates_scores:
         tfidf = candidates_scores[key]
         doc_id, term = key
         D.loc[doc_id][term] = tfidf
-
     return D
 
-def generate_query_tfidf_vector(query_to_search, index):
+def generate_query_tfidf_vector(query_to_search, words, pls):
 
     """
     Generate a vector representing the query. Each entry within this vector represents a tfidf score.
@@ -351,18 +423,18 @@ def generate_query_tfidf_vector(query_to_search, index):
     """
 
     epsilon = .0000001
-    total_vocab_size = len(index.term_total)
-    Q = np.zeros((total_vocab_size))
-    term_vector = list(index.term_total.keys())
+    
+    
+    Q = np.zeros(len(body_words))
     counter = Counter(query_to_search)
-    for token in np.unique(query_to_search):
-        if token in index.term_total.keys():  # avoid terms that do not appear in the index.
+    for token in query_to_search:
+        if token in words:  # avoid terms that do not appear in the index.
             tf = counter[token] / len(query_to_search)  # term frequency divded by the length of the query
-            df = index.df[token]
-            idf = math.log((len(index.DL)) / (df + epsilon), 10)  # smoothing
+            df = idx_body.df[token]
 
+            idf = math.log((len(idx_body.DL)) / (df + epsilon), 10)  # smoothing
             try:
-                ind = term_vector.index(token)
+                ind = body_words.index(token)
                 Q[ind] = tf * idf
             except:
                 pass
@@ -419,86 +491,7 @@ def cosine_similarity(D, Q):
         res[idx] = cos_sim_formula(row, Q)
     return res
 
-
-
-is_gcp = False
-# if not is_gcp:
-#     # Copy one wikidumps files
-#     import os
-#     from pathlib import Path
-#
-#     ## RENAME the project_id to yours project id from the project you created in GCP
-#     project_id = 'crypto-lexicon-370515'
-#     !gcloud
-#     config
-#     set
-#     project
-#     {project_id}
-#
-#     data_bucket_name = 'wikidata20210801_preprocessed'
-#     try:
-#         if os.environ["wikidata20210801_preprocessed"] is not None:
-#             pass
-#     except:
-#         !mkdir
-#         wikidumps
-#         !gsutil - u
-#         {project_id}
-#         cp
-#         gs: // {data_bucket_name} / multistream1_preprocessed.parquet
-#         "wikidumps/"
-#
-#     try:
-#         if os.environ["wikidata20210801_preprocessed"] is not None:
-#             path = os.environ["wikidata20210801_preprocessed"] + "/wikidumps/*"
-#     except:
-#         path = "wikidumps/*"
-#
-#     parquetFile = spark.read.parquet(path)
-#     # take the 'title', 'text', 'anchor_text' and 'id' or the first 1000 rows and create an RDD from it
-#     doc_title_text_anchor_quadruplets = parquetFile.limit(1000).select("title", "text", "anchor_text", "id").rdd
-#
-#     from inverted_index_colab import *
-#
-#     id_title = spark.read.parquet(path).limit(1000).select("id", "title")
-#
-# else:
-#     # Put your bucket name below and make sure you can access it without an error
-#     bucket_name = '318419512_318510252'
-#     full_path = f"gs://{318419512_318510252}/"
-#     paths = []
-#
-#     client = storage.Client()
-#     blobs = client.list_blobs(bucket_name)
-#     for b in blobs:
-#         if b.name != 'graphframes.sh':
-#             paths.append(full_path + b.name)
-#     parquetFile = spark.read.parquet(*paths)
-#     from inverted_index_gcp import InvertedIndex
-#
-#     id_title = parquetFile.select("id", "title").rdd
-#
-# import pyspark.sql.functions as f
-# get_title_from_id = lambda wiki_id: id_title.filter(f.col('id')==wiki_id).collect()[0][1]
-
-#if __name__ == '__main__':
-    # run the Flask RESTful API, make the server publicly available (host='0.0.0.0') on port 8080
-    #app.run(host='0.0.0.0', port=8080, debug=True)
-
-
-
-    # idx_body = InvertedIndex.read_index('.', 'body_index')
-    # idx_title = InvertedIndex.read_index('.', 'title_index')
-    # idx_anchor = InvertedIndex.read_index('.', 'anchor_index')
-    #
-    # body_words_pls = dict(zip(*zip(*idx_body.posting_lists_iter())))
-    #title_words_pls = dict(zip(*zip(*idx_title.posting_lists_iter())))
-    # anchor_words_pls = dict(zip(*zip(*idx_anchor.posting_lists_iter())))
-
-    #
-    # id_pagerank_title_pageviews_df = pd.read_csv("colab_pagerank.csv", index_col=0)
-    # print(search_title())
-def load_data(spark_df):
+def load_data(load_data_dict):
     # load the three indexes
     global idx_body
     idx_body = InvertedIndex.read_index('./colab_indexes', 'body_index')
@@ -511,10 +504,18 @@ def load_data(spark_df):
     global title_words_pls
     global anchor_words_pls
     global id_pagerank_title_pageviews_df
-
+    global id_title_pr_pv_dict
+    global N  # Number of documents in the corpus
+    
     # make a dictionary such as {word1: pls1, word2: pls2 ...}
+
     body_words, body_pls = zip(*idx_body.posting_lists_iter())
     title_words_pls = dict(zip(*zip(*idx_title.posting_lists_iter())))
     anchor_words_pls = dict(zip(*zip(*idx_anchor.posting_lists_iter())))
+    id_title_pr_pv_dict = load_data_dict 
+    N = len(idx_body.DL)
 
-    id_pagerank_title_pageviews_df = spark_df
+    
+
+    
+    
