@@ -1,4 +1,3 @@
-import pyspark
 import sys
 from collections import Counter, OrderedDict
 import itertools
@@ -13,6 +12,8 @@ import pickle
 from google.cloud import storage
 from collections import defaultdict
 from contextlib import closing
+from google.cloud import storage
+import gc
 
 
 # Let's start with a small block size of 30 bytes just to test things out. 
@@ -55,7 +56,7 @@ class MultiFileWriter:
             The function saves the posting files into the right bucket in google storage.
         '''
         file_name = self._f.name
-        blob = self.bucket.blob(f"postings_gcp/{file_name}")
+        blob = self.bucket.blob(f"postings_gcp_fixed/{file_name}")
         blob.upload_from_filename(file_name)
 
         
@@ -69,17 +70,21 @@ class MultiFileReader:
         b = []
         for f_name, offset in locs:
             if f_name not in self._open_files:
-                self._open_files[f_name] = open(f_name, 'rb')
+                client = storage.Client()
+                bucket = client.bucket('318419512_318510252')
+                self._open_files[f_name] = bucket.get_blob('postings_gcp_fixed/' + f_name).download_as_bytes()
+                client.close()
+                gc.collect()
             f = self._open_files[f_name]
-            f.seek(offset)
             n_read = min(n_bytes, BLOCK_SIZE - offset)
-            b.append(f.read(n_read))
+            b.append(f[offset:offset+n_read])
             n_bytes -= n_read
         return b''.join(b)
   
     def close(self):
-        for f in self._open_files.values():
-            f.close()
+        pass # used blob.download_as_bytes() instead of open(), added client.close() to read() function
+        #for f in self._open_files.values():
+        #    f.close()
 
     def __exit__(self, exc_type, exc_value, traceback):
         self.close()
@@ -155,11 +160,13 @@ class InvertedIndex:
         """ A generator that reads one posting list from disk and yields 
             a (word:str, [(doc_id:int, tf:int), ...]) tuple.
         """
-        abs_path = 'gs://318419512_318510252/postings_gcp/'
         with closing(MultiFileReader()) as reader:
             for w, locs in self.posting_locs.items():
-                b = reader.read([(abs_path + locs[0][0], locs[0][1])], self.df[w] * TUPLE_SIZE)
-                #b = reader.read(locs[0], self.df[w] * TUPLE_SIZE)
+                try:
+                    b = reader.read([(locs[0][0], locs[0][1])], self.df[w] * TUPLE_SIZE)
+                except KeyError:
+                    print(w)
+                    continue  # filtered body words are not in self.df (> 50 appearances)
                 posting_list = []
                 for i in range(self.df[w]):
                     doc_id = int.from_bytes(b[i*TUPLE_SIZE:i*TUPLE_SIZE+4], 'big')
@@ -194,6 +201,7 @@ class InvertedIndex:
                 locs = writer.write(b)
                 # save file locations to index
                 posting_locs[w].extend(locs)
+            writer._f.close()
             writer.upload_to_gcp() 
             InvertedIndex._upload_posting_locs(bucket_id, posting_locs, bucket_name)
         return bucket_id
@@ -205,7 +213,7 @@ class InvertedIndex:
             pickle.dump(posting_locs, f)
         client = storage.Client()
         bucket = client.bucket(bucket_name)
-        blob_posting_locs = bucket.blob(f"postings_gcp/{bucket_id}_posting_locs.pickle")
+        blob_posting_locs = bucket.blob(f"postings_gcp_fixed/{bucket_id}_posting_locs.pickle")
         blob_posting_locs.upload_from_filename(f"{bucket_id}_posting_locs.pickle")
     
 

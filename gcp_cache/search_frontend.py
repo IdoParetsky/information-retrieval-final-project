@@ -6,11 +6,12 @@ import nltk
 nltk.download('stopwords')
 from nltk.corpus import stopwords
 from collections import defaultdict, Counter, ChainMap
-from inverted_index_colab import *
+from inverted_index_gcp import *
 import time
 import pickle
 from pathlib import Path
 from google.cloud import storage
+import gc
 
 
 class MyFlaskApp(Flask):
@@ -529,18 +530,53 @@ def get_top_n(sim_dict, N=3):
     return sorted([(wiki_id, round(score, 10)) for wiki_id, score in sim_dict.items()], key=lambda x: x[1], reverse=True)[:N]
 
 
+def load_pickle_from_bucket(path):
+    """
+    Downloads a referenced .pkl file as bytes from the bucket and loads it as a variable
+
+    Parameters:
+    -----------
+    path: str
+        Path of referenced .pkl file within the bucket
+
+    Returns:
+    -----------
+    Object stored as a .pkl file within the bucket 
+    """
+    
+    client = storage.Client()
+    bucket = client.bucket('318419512_318510252')
+    file = pickle.loads(bucket.get_blob(path).download_as_bytes())
+    client.close()
+    gc.collect()
+    
+    return file
+
+
 @app.route("/load_data")
 def load_data():
+    """
+    Loads all necessary variables from the GCP Bucket as Global Variables. Runs before the server goes up.
+    
+    Parameters:
+    -----------
+    None
+    
+    Returns:
+    -----------
+    None
+    """
+    
     os.environ['KMP_DUPLICATE_LIB_OK'] = 'True'  # Prevents kernel death when downloading .pkl files from bucket
-    index_path = 'gs://318419512_318510252/postings_gcp'
+    bucket_name = '318419512_318510252'
     id_title_pr_pv_dict_path = 'gs://318419512_318510252/id_title_pr_pv_dict_path.pkl'
     # load the three indexes
     global idx_body
     global idx_title
     global idx_anchor
-    idx_body = InvertedIndex.read_index(index_path, 'body_index')
-    idx_title = InvertedIndex.read_index(index_path, 'title_index')
-    idx_anchor = InvertedIndex.read_index(index_path, 'anchor_index')
+    idx_body = load_pickle_from_bucket("postings_gcp/body_index.pkl")
+    idx_title = load_pickle_from_bucket("postings_gcp/title_index.pkl")
+    idx_anchor = load_pickle_from_bucket("postings_gcp/anchor_index.pkl")
 
     # declare the variables we will need in other functions (search) as global
     global body_words_pls
@@ -557,24 +593,25 @@ def load_data():
     anchor_words_pls = dict(zip(*zip(*idx_anchor.posting_lists_iter())))
     
     N = len(idx_body.DL)
-     
-    client = storage.Client()
-    blobs = client.list_blobs(bucket_name)
-    for b in blobs:
-        if b.name.startswith("id_title_pr_pv_dict_cast.pkl"):  # Parse pageviews data only
-            id_title_pr_pv_dict =  pickle.loads(b.download_as_bytes())
-            break
+
+    id_title_pr_pv_dict = load_pickle_from_bucket("id_title_pr_pv_dict_cast.pkl")
+
+
     
     # as the .pkl files are loaded with a lazy manner, we explicitly initiate their mapping to dict in load_data() by a dummy call
-    idx_body.DL['309']
-    idx_title.DL['309']
-    idx_anchor.DL['309']
+    idx_body.DL[309]
+    idx_title.DL[309]
+    idx_anchor.DL[309]
     body_words_pls['american']
     title_words_pls['american']
     anchor_words_pls['american']
-    id_title_pr_pv_dict['309']  
+    id_title_pr_pv_dict[309]  
     
 
+if __name__ == '__main__':
+    # run the Flask RESTful API, make the server publicly available (host='0.0.0.0') on port 8080
+    load_data()
+    app.run(host='0.0.0.0', port=8080, debug=True)
     
 
     
