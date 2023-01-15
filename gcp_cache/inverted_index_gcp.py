@@ -56,7 +56,7 @@ class MultiFileWriter:
             The function saves the posting files into the right bucket in google storage.
         '''
         file_name = self._f.name
-        blob = self.bucket.blob(f"postings_gcp_fixed/{file_name}")
+        blob = self.bucket.blob(f"postings_gcp/{file_name}")
         blob.upload_from_filename(file_name)
 
         
@@ -65,27 +65,24 @@ class MultiFileReader:
     """ Sequential binary reader of multiple files of up to BLOCK_SIZE each. """
     def __init__(self):
         self._open_files = {}
-
+    
+    
     def read(self, locs, n_bytes):
         b = []
         for f_name, offset in locs:
             if f_name not in self._open_files:
-                client = storage.Client()
-                bucket = client.bucket('318419512_318510252')
-                self._open_files[f_name] = bucket.get_blob('postings_gcp_fixed/' + f_name).download_as_bytes()
-                client.close()
-                gc.collect()
+                self._open_files[f_name] = open('postings_gcp/' + f_name, 'rb')  # edited path to directory downloaded from the bucket to the instance
             f = self._open_files[f_name]
+            f.seek(offset)
             n_read = min(n_bytes, BLOCK_SIZE - offset)
-            b.append(f[offset:offset+n_read])
+            b.append(f.read(n_read))
             n_bytes -= n_read
         return b''.join(b)
-  
+    
     def close(self):
-        pass # used blob.download_as_bytes() instead of open(), added client.close() to read() function
-        #for f in self._open_files.values():
-        #    f.close()
-
+        for f in self._open_files.values():
+            f.close()
+    
     def __exit__(self, exc_type, exc_value, traceback):
         self.close()
         return False 
@@ -135,7 +132,7 @@ class InvertedIndex:
         self.term_total.update(w2cnt)
         for w, cnt in w2cnt.items():
             self.df[w] = self.df.get(w, 0) + 1
-            self._posting_list[w].append((doc_id, cnt))  # TODO: Consider adding more attributes to the posting list to help evaluating similarity
+            self._posting_list[w].append((doc_id, cnt))
 
     def write_index(self, base_dir, name):
         """ Write the in-memory index to disk. Results in the file: 
@@ -155,7 +152,21 @@ class InvertedIndex:
         state = self.__dict__.copy()
         del state['_posting_list']
         return state
-
+    
+    # Added from past assignment, assists in maintaining a stable instance as mapping posting_lists_iter() to a dictionary might cause OutOfMemoryError or kill the kernel
+    def read_posting_list(self, w):
+        """ read one posting list from disk """
+        with closing(MultiFileReader()) as reader:
+            locs = self.posting_locs[w]
+            b = reader.read([(locs[0][0], locs[0][1])], self.df[w] * TUPLE_SIZE) # Unpacking correction
+            posting_list = []
+            for i in range(self.df[w]):
+              wiki_id = int.from_bytes(b[i*TUPLE_SIZE:i*TUPLE_SIZE+4], 'big')
+              tf = int.from_bytes(b[i*TUPLE_SIZE+4:(i+1)*TUPLE_SIZE], 'big')
+              if (wiki_id, tf) != (0, 0):  # every posting list creation had random missing values, we are content with our results nontheless
+                  posting_list.append((wiki_id, tf))
+        return posting_list
+    
     def posting_lists_iter(self):
         """ A generator that reads one posting list from disk and yields 
             a (word:str, [(doc_id:int, tf:int), ...]) tuple.
@@ -166,7 +177,7 @@ class InvertedIndex:
                     b = reader.read([(locs[0][0], locs[0][1])], self.df[w] * TUPLE_SIZE)
                 except KeyError:
                     print(w)
-                    continue  # filtered body words are not in self.df (> 50 appearances)
+                    continue  # filtered body words are not in self.df (< 50 appearances)
                 posting_list = []
                 for i in range(self.df[w]):
                     doc_id = int.from_bytes(b[i*TUPLE_SIZE:i*TUPLE_SIZE+4], 'big')
@@ -201,7 +212,7 @@ class InvertedIndex:
                 locs = writer.write(b)
                 # save file locations to index
                 posting_locs[w].extend(locs)
-            writer._f.close()
+            writer._f.close()  # Added so non-full (last) bins will be saved correctly as well (as full bins)
             writer.upload_to_gcp() 
             InvertedIndex._upload_posting_locs(bucket_id, posting_locs, bucket_name)
         return bucket_id
@@ -213,7 +224,7 @@ class InvertedIndex:
             pickle.dump(posting_locs, f)
         client = storage.Client()
         bucket = client.bucket(bucket_name)
-        blob_posting_locs = bucket.blob(f"postings_gcp_fixed/{bucket_id}_posting_locs.pickle")
+        blob_posting_locs = bucket.blob(f"postings_gcp/{bucket_id}_posting_locs.pickle")
         blob_posting_locs.upload_from_filename(f"{bucket_id}_posting_locs.pickle")
     
 

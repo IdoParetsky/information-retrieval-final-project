@@ -1,1 +1,45 @@
 # information-retrieval-final-project
+Information Retrieval Course's Final Project
+
+We have created a Search Engine that accepts queries and retrieves relevant Wikipedia Articles (English only).
+
+Our Engine calculates relevancy scores according to Title / Body / Anchor Text weights, whether the query tokens appeared in any group-InvertedIndex's Posting-Lists and each group's Cosine Similarity value with regard to the query.
+
+Our Engine runs on a GCP VM Instance, with the Posting Lists downloaded from our GCP Bucket to the Instance for runtime minimization, while the InvertedIndex and Wiki ID, Title, PageRank and PageViews scores are downloaded from the Bucket in each Server Startup.
+
+Instance IP: 104.197.198.70 (port 8080)
+Project ID: crypto-lexicon-370515 (Project Name: Information Retrieval)
+Bucket ID: 318419512_318510252
+GitHub Repo: https://github.com/IdoParetsky/information-retrieval-final-project/tree/master
+Git Directory in Google Drive: https://drive.google.com/drive/u/0/folders/1LUf_YLUbEo4Qj1CTqvKgqYiMgHy9Ejgf
+
+Repository's Contents:
+    IR_Project.ipynb - Notebook used for managing the Git directory, Computing the InvertedIndex & PageRank, Downloading Pageviews and merging Wiki ID, Title, PageRank and Pageviews as one dictionary
+    run_frontend_in_colab_test_gcp.ipynb - Notebook for running the Debug Engine (1000 articles) with Ngrok & optimizing the group weights on the full Search Engine
+    Report.docx - A written summary of our work, in text
+    Report.pptx - A written summary of our work, in slides
+    README.md - This file. provides project structure.
+    queries_train.json - Initial given train set
+    new_train.json - Corrected given train set
+    graphframes.sh - Cluster initialization file
+    wikidumps - A directory containing the first Parquet file, for the creation of a Debug Engine's InvertedIndex
+    colab_cache:
+        colab_bins - Posting Lists' .bin files
+        colab_indexes - groups' InvertedIndex .pkl files
+        colab_pagerank.csv.gz - Debug Engine's compressed Wiki ID, Title, PageRank & PageViews table.
+        colab_search_frontend.py - Search functions and scoring logic for Debug Engine
+        id_title_pr_pv_dict_cast.pkl - A pickle file containing a dictionary mapping Debug Engine's Wiki IDs to (Title, PageRank, PageViews). Wiki IDs are cast as int, PageRank and PageViews are casted as floats
+        inverted_index_colab.py - InvertedIndex Class for Debug Engine
+        ngrok & ngrok-stable-linux-amd64.zip - Files with which we used Ngrok to run the Debug Engine as a server
+        pageviews-202108-user.pkl - August 2021 PageViews
+    gcp_cache:
+        gcp_pagerank_pageviews.csv.gz - Search Engine's compressed Wiki ID, Title, PageRank & PageViews table
+        id_title_pr_pv_dict_cast.pkl - A pickle file containing a dictionary mapping Search Engine's Wiki IDs to (Title, PageRank, PageViews). Wiki IDs are cast as int, PageRank and PageViews are casted as floats
+        inverted_index_gcp.py - InvertedIndex Class for Search Engine
+        pageviews-202108-user.pkl - August 2021 PageViews
+        run_frontend_in_gcp.sh - Given Instance creation commands and explanations
+        search_frontend.py - Search functions and scoring logic for Search Engine
+        startup_script_gcp.sh - Given python dependencies for Instance
+        
+    
+    
