@@ -247,6 +247,8 @@ def search(search_query=None):
     else:
         query = request.args.get('query', '')
         norm_cos_sim = request.args.get('norm_cos_sim', "False") in ["True", "true", "T", "t"] # Cosine Similarity Normalization switch for debugging purposes
+        title_slice = int(request.args.get('title_slice', 5))
+        body_slice = int(request.args.get('body_slice', 10))
     
     if len(query) == 0:
       return [] if search_query else jsonify([])
@@ -267,7 +269,7 @@ def search(search_query=None):
         #anchor_res, anchor_cos_sim = search_tfidf_cos_sim(query=query, group="anchor", norm_cos_sim=norm_cos_sim, is_search=True)
          
         # While optimizing the weights that the anchor calculates only lowers our M.A.P@40 score.
-        res = calc_score_according_to_weight(pagerank_weight=pagerank_weight, pageviews_weight=pageviews_weight, body_res=body_res, body_weight=body_weight, body_cos_sim=body_cos_sim)#title_res=title_res, title_weight=title_weight, title_cos_sim=title_cos_sim, anchor_res=anchor_res, anchor_weight=anchor_weight, anchor_cos_sim=anchor_cos_sim) 
+        res = calc_score_according_to_weight(pagerank_weight=pagerank_weight, pageviews_weight=pageviews_weight, body_res=body_res, body_weight=body_weight, body_cos_sim=body_cos_sim)[:body_slice]#title_res=title_res, title_weight=title_weight, title_cos_sim=title_cos_sim, anchor_res=anchor_res, anchor_weight=anchor_weight, anchor_cos_sim=anchor_cos_sim) 
         
         
     else: # Wiki scores for short queries are calculated with a larger emphasis on the title, assisted by body, pagerank and pageviews (anchor had a negative influence on the M.A.P@40 score)
@@ -276,7 +278,7 @@ def search(search_query=None):
 
         res, title_cos_sim = search_tfidf_cos_sim(query=query, group="title", norm_cos_sim=norm_cos_sim, is_search=True)
         
-        res = calc_score_according_to_weight(title_res=res, title_weight=title_weight, title_cos_sim=title_cos_sim, pagerank_weight=pagerank_weight, pageviews_weight=pageviews_weight)
+        res = calc_score_according_to_weight(title_res=res, title_weight=title_weight, title_cos_sim=title_cos_sim, pagerank_weight=pagerank_weight, pageviews_weight=pageviews_weight)[:title_slice]
         
     return res if search_query else jsonify(res)
     # END SOLUTION
